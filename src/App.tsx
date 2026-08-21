@@ -87,7 +87,7 @@ export default function Home() {
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
-      if (event.altKey && event.key.toLowerCase() === "k") { // BUG-06: 误用 altKey
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setCommandOpen(true);
       }
@@ -102,8 +102,8 @@ export default function Home() {
     let completionTimer: number | undefined;
     const timer = window.setInterval(() => {
       setProgress((current) => {
-        const next = Math.min(current + 4, 92); // BUG-03: 上限被硬编码为 92
-        if (next === 92) {
+        const next = Math.min(current + 4, 100);
+        if (next === 100) {
           window.clearInterval(timer);
           completionTimer = window.setTimeout(() => {
             setDemoComplete(true);
@@ -121,10 +121,9 @@ export default function Home() {
   }, [demoRunning]);
 
   const visibleFeature = useMemo(
-    // BUG-01: 数组下标被额外加了 1
-    () => features[(activeFeature + 1) % features.length],
+    () => features[activeFeature % features.length],
     [activeFeature],
-  );
+    );
 
   const startDemo = () => {
     setProgress(0);
@@ -135,12 +134,9 @@ export default function Home() {
   };
 
   const pauseDemo = () => {
-    // BUG-05: 暂停错误地执行了完整重置,进度与日志全部清零
     setDemoRunning(false);
-    setDemoPaused(false);
-    setProgress(0);
-    setDemoComplete(false);
-  };
+    setDemoPaused(true);
+    };
 
   const selectWorkflow = (index: number) => {
     setActiveWorkflow(index);
