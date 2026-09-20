@@ -61,12 +61,40 @@ const stories = [
 
 const installCommand = "npm install -g @codem/cli";
 
+type Theme = "light" | "dark";
+
+const getInitialTheme = (): Theme => {
+  try {
+    const saved = localStorage.getItem("codem-theme");
+    if (saved === "light" || saved === "dark") return saved;
+  } catch {
+    // 隐私模式下 localStorage 不可用时忽略，回退到系统偏好
+  }
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+};
+
 function Arrow({ left = false }: { left?: boolean }) {
   return <span className={left ? "arrow left" : "arrow"} aria-hidden="true">↗</span>;
 }
 
 function Logo({ inverse = false }: { inverse?: boolean }) {
   return <a className={`brand ${inverse ? "inverse" : ""}`} href="#top" aria-label="飞书 CodeM 首页"><img src={asset("/codem/header-logo.png")} alt="飞书 CodeM" /></a>;
+}
+
+function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
+  const label = theme === "dark" ? "切换到浅色模式" : "切换到暗色模式";
+  return (
+    <button
+      type="button"
+      className="theme-toggle"
+      onClick={onToggle}
+      aria-label={label}
+      title={label}
+      aria-pressed={theme === "dark"}
+    >
+      {theme === "dark" ? "☀" : "☾"}
+    </button>
+  );
 }
 
 export default function Home() {
@@ -84,6 +112,34 @@ export default function Home() {
   const [submissionCount, setSubmissionCount] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submissionMessage, setSubmissionMessage] = useState("");
+  const [theme, setTheme] = useState<Theme>(getInitialTheme);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem("codem-theme", theme);
+    } catch {
+      // 隐私模式下 localStorage 不可用时忽略
+    }
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", theme === "dark" ? "#0d0e12" : "#f4f3f6");
+  }, [theme]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleSchemeChange = (event: MediaQueryListEvent) => {
+      try {
+        if (localStorage.getItem("codem-theme")) return;
+      } catch {
+        // 无法读取偏好时默认跟随系统
+      }
+      setTheme(event.matches ? "dark" : "light");
+    };
+    media.addEventListener("change", handleSchemeChange);
+    return () => media.removeEventListener("change", handleSchemeChange);
+  }, []);
+
+  const toggleTheme = () => setTheme((current) => (current === "dark" ? "light" : "dark"));
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -170,7 +226,7 @@ export default function Home() {
   const story = stories[storyIndex];
 
   return (
-    <main className={`codem-site theme-light`} id="top">
+    <main className={`codem-site theme-${theme}`} id="top">
       <header className="site-header">
         <div className="logo-distortion"><Logo /></div>
         <div className="broadcast-id"><i />CODEM LIVE LAB <span>2026.07.15 / 20:00</span></div>
@@ -180,7 +236,8 @@ export default function Home() {
           <a href="#security">企业安全</a>
         </nav>
         <div className="header-actions">
-          <span className="live-status"><i /><b>系统在线</b></span>
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
+            <span className="live-status"><i /><b>系统在线</b></span>
           <button className="command-button" type="button" onClick={() => setCommandOpen(true)}>快速启动 <kbd>⌘ K</kbd></button>
         </div>
       </header>
