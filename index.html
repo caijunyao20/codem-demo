@@ -16,11 +16,15 @@
     <meta name="twitter:image" content="og.png" />
     <script>
       (function () {
-        var saved = null;
-        try { saved = localStorage.getItem("codem-theme"); } catch (e) {}
-        var theme = saved === "light" || saved === "dark"
-          ? saved
-          : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        var base = null, anime = null;
+        try {
+        base = localStorage.getItem("codem-theme");
+          anime = localStorage.getItem("codem-theme-anime");
+          } catch (e) {}
+        var theme = anime === "on" ? "anime"
+      : (base === "light" || base === "dark"
+    ? base
+            : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
         document.documentElement.dataset.theme = theme;
       })();
     </script>
