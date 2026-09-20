@@ -61,9 +61,10 @@ const stories = [
 
 const installCommand = "npm install -g @codem/cli";
 
-type Theme = "light" | "dark";
+type BaseTheme = "light" | "dark";
+type Theme = BaseTheme | "anime";
 
-const getInitialTheme = (): Theme => {
+const getInitialBaseTheme = (): BaseTheme => {
   try {
     const saved = localStorage.getItem("codem-theme");
     if (saved === "light" || saved === "dark") return saved;
@@ -71,6 +72,15 @@ const getInitialTheme = (): Theme => {
     // 隐私模式下 localStorage 不可用时忽略，回退到系统偏好
   }
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+};
+
+const getInitialAnime = (): boolean => {
+  try {
+    return localStorage.getItem("codem-theme-anime") === "on";
+  } catch {
+    // 隐私模式下 localStorage 不可用时忽略，默认关闭动漫风
+    return false;
+  }
 };
 
 function Arrow({ left = false }: { left?: boolean }) {
@@ -97,6 +107,22 @@ function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }
   );
 }
 
+function AnimeToggle({ active, onToggle }: { active: boolean; onToggle: () => void }) {
+const label = active ? "关闭动漫风模式" : "开启动漫风模式";
+return (
+  <button
+    type="button"
+    className={`theme-toggle anime-toggle ${active ? "is-active" : ""}`}
+    onClick={onToggle}
+    aria-label={label}
+    title={label}
+    aria-pressed={active}
+  >
+    {active ? "★" : "☆"}
+  </button>
+);
+}
+
 export default function Home() {
   const [commandOpen, setCommandOpen] = useState(false);
   const [demoRunning, setDemoRunning] = useState(false);
@@ -112,18 +138,21 @@ export default function Home() {
   const [submissionCount, setSubmissionCount] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submissionMessage, setSubmissionMessage] = useState("");
-  const [theme, setTheme] = useState<Theme>(getInitialTheme);
+  const [baseTheme, setBaseTheme] = useState<BaseTheme>(getInitialBaseTheme);
+  const [animeOn, setAnimeOn] = useState<boolean>(getInitialAnime);
+  const theme: Theme = animeOn ? "anime" : baseTheme;
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     try {
-      localStorage.setItem("codem-theme", theme);
+      localStorage.setItem("codem-theme", baseTheme);
+      localStorage.setItem("codem-theme-anime", animeOn ? "on" : "off");
     } catch {
       // 隐私模式下 localStorage 不可用时忽略
     }
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute("content", theme === "dark" ? "#0d0e12" : "#f4f3f6");
-  }, [theme]);
+    if (meta) meta.setAttribute("content", theme === "dark" ? "#0d0e12" : theme === "anime" ? "#ffe3f1" : "#f4f3f6");
+  }, [theme, baseTheme, animeOn]);
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -133,13 +162,18 @@ export default function Home() {
       } catch {
         // 无法读取偏好时默认跟随系统
       }
-      setTheme(event.matches ? "dark" : "light");
+      setBaseTheme(event.matches ? "dark" : "light");
     };
     media.addEventListener("change", handleSchemeChange);
     return () => media.removeEventListener("change", handleSchemeChange);
   }, []);
 
-  const toggleTheme = () => setTheme((current) => (current === "dark" ? "light" : "dark"));
+  const toggleTheme = () => {
+    setAnimeOn(false);
+    setBaseTheme((current) => (current === "dark" ? "light" : "dark"));
+  };
+
+  const toggleAnime = () => setAnimeOn((current) => !current);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -237,6 +271,7 @@ export default function Home() {
         </nav>
         <div className="header-actions">
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
+          <AnimeToggle active={animeOn} onToggle={toggleAnime} />
             <span className="live-status"><i /><b>系统在线</b></span>
           <button className="command-button" type="button" onClick={() => setCommandOpen(true)}>快速启动 <kbd>⌘ K</kbd></button>
         </div>
