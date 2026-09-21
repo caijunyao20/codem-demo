@@ -97,6 +97,29 @@ function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }
   );
 }
 
+function BackToTop() {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setVisible(window.scrollY > window.innerHeight);
+    onScroll(); // 初始化时校正一次（如刷新后浏览器恢复滚动位置）
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  return (
+    <button
+      type="button"
+      className={`back-to-top ${visible ? "is-visible" : ""}`}
+      onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+      aria-label="返回顶部"
+      title="返回顶部"
+    >
+      ↑
+    </button>
+  );
+}
+
 export default function Home() {
   const [commandOpen, setCommandOpen] = useState(false);
   const [demoRunning, setDemoRunning] = useState(false);
@@ -347,6 +370,8 @@ export default function Home() {
       </section>
 
       <footer className="site-footer"><div><Logo inverse /><span>CODEM LIVE LAB / 飞书原生的 AI 研发智能体</span></div><nav><a href="#capabilities">演示棋盘</a><a href="#workflow">运行轨迹</a><a href="#security">企业安全</a><a href="#top">TOP ↑</a></nav><small>© {new Date().getFullYear()} 飞书 CodeM. ALL SYSTEMS RESERVED.</small></footer>
+
+        <BackToTop />
 
       {commandOpen ? <div className="command-overlay" role="presentation" onMouseDown={() => setCommandOpen(false)}><section className="command-palette" role="dialog" aria-modal="true" aria-label="CodeM 快速启动" onMouseDown={(event) => event.stopPropagation()}><header><span>⌕</span><input autoFocus placeholder="输入任务，或跳转到演示模块…" /><kbd>ESC</kbd></header><p>LIVE LAB COMMANDS</p><button type="button" onClick={() => { setCommandOpen(false); startDemo(); }}><span>▶</span><strong>启动现场沙箱任务</strong><kbd>↵</kbd></button><a href="#capabilities" onClick={() => setCommandOpen(false)}><span>01</span><strong>打开演示棋盘</strong><kbd>G B</kbd></a><a href="#security" onClick={() => setCommandOpen(false)}><span>04</span><strong>查看企业安全</strong><kbd>G S</kbd></a></section></div> : null}
     </main>
