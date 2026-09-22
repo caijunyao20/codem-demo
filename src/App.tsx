@@ -1,4 +1,4 @@
-import { type CSSProperties, type FormEvent, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 const BASE = import.meta.env.BASE_URL;
 const asset = (path: string) => `${BASE}${path.replace(/^\//, "")}`;
@@ -61,6 +61,23 @@ const stories = [
 
 const installCommand = "npm install -g @codem/cli";
 
+type SearchEntry = {
+  id: string; // 目标区块 DOM id，用于滚动定位
+  label: string; // 结果列表主标题
+  description: string; // 结果列表副文案（板块描述/功能文案）
+  keywords: string[]; // 额外匹配关键词（中英文别名）
+};
+
+const searchIndex: SearchEntry[] = [
+  { id: "top", label: "现场发布", description: "把 9 个 Bug 交给 CodeM 的直播现场", keywords: ["hero", "live", "发布"] },
+  { id: "capabilities", label: "演示棋盘", description: "协作、流程、沙箱、组织资产四大核心能力", keywords: ["collab", "sandbox", "能力"] },
+  { id: "agent-stack", label: "Agent 能力栈", description: "需求、缺陷、自动化任务三种推进方式", keywords: ["stack", "iteration", "defect", "autopilot"] },
+  { id: "workflow", label: "运行轨迹", description: "理解、计划、执行、回流四步执行链", keywords: ["trace", "流程"] },
+  { id: "security", label: "企业安全", description: "隔离执行、权限精细、数据主权", keywords: ["enterprise", "policy", "安全"] },
+  { id: "stories", label: "客户实践", description: "早期合作伙伴的交付收益数据", keywords: ["story", "案例"] },
+  { id: "trial", label: "试用申请", description: "安装命令与内测资格申请", keywords: ["install", "申请"] },
+];
+
 type BaseTheme = "light" | "dark";
 type Theme = BaseTheme | "anime";
 
@@ -121,6 +138,128 @@ return (
     {active ? "★" : "☆"}
   </button>
 );
+}
+
+function GlobalSearch() {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const hitTimer = useRef<number | undefined>(undefined);
+
+  const keyword = query.trim();
+
+  const results = useMemo(() => {
+    const text = keyword.toLowerCase();
+    if (!text) return [];
+    return searchIndex.filter((entry) =>
+      [entry.label, entry.description, ...entry.keywords].some((value) => value.toLowerCase().includes(text)),
+    );
+  }, [keyword]);
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [keyword]);
+
+  // 点击组件外部时收起下拉
+  useEffect(() => {
+    const onMouseDown = (event: MouseEvent) => {
+      if (event.target instanceof Element && !event.target.closest(".site-search")) setOpen(false);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, []);
+
+  // 卸载时清理定位高亮定时器
+  useEffect(() => () => {
+    if (hitTimer.current !== undefined) window.clearTimeout(hitTimer.current);
+  }, []);
+
+  const goto = (entry: SearchEntry) => {
+    const target = document.getElementById(entry.id);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    target.classList.remove("is-search-hit");
+    window.requestAnimationFrame(() => target.classList.add("is-search-hit"));
+    if (hitTimer.current !== undefined) window.clearTimeout(hitTimer.current);
+    hitTimer.current = window.setTimeout(() => target.classList.remove("is-search-hit"), 900);
+    setOpen(false);
+  };
+
+  // 命中片段高亮
+  const highlight = (text: string) => {
+    const index = keyword ? text.toLowerCase().indexOf(keyword.toLowerCase()) : -1;
+    if (index < 0) return text;
+    return (
+      <>
+        {text.slice(0, index)}
+        <mark>{text.slice(index, index + keyword.length)}</mark>
+        {text.slice(index + keyword.length)}
+      </>
+    );
+  };
+
+  // 搜索框内部按键自行处理，不冒泡影响 ⌘K 命令面板
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      setOpen(false);
+      return;
+    }
+    if (!results.length) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(true);
+      setActiveIndex((current) =>
+        (event.key === "ArrowDown" ? current + 1 : current - 1 + results.length) % results.length,
+      );
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      const entry = results[activeIndex] ?? results[0];
+      if (entry) goto(entry);
+    }
+  };
+
+  return (
+    <div className="site-search">
+      <span aria-hidden="true">⌕</span>
+      <input
+        type="search"
+        value={query}
+        placeholder="搜索板块…"
+        aria-label="搜索页面板块"
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={handleKeyDown}
+      />
+      {open && keyword ? (
+        <div className="search-results" role="listbox" aria-label="搜索结果">
+          {results.length ? (
+            results.map((entry, index) => (
+              <button
+                key={entry.id}
+                type="button"
+                role="option"
+                aria-selected={index === activeIndex}
+                className={`search-result ${index === activeIndex ? "is-active" : ""}`}
+                onMouseEnter={() => setActiveIndex(index)}
+                onClick={() => goto(entry)}
+              >
+                <strong>{highlight(entry.label)}</strong>
+                <small>{entry.description}</small>
+              </button>
+            ))
+          ) : (
+            <p className="search-empty">未找到相关板块，换个关键词试试</p>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export default function Home() {
@@ -269,6 +408,7 @@ export default function Home() {
           <a href="#workflow">运行轨迹</a>
           <a href="#security">企业安全</a>
         </nav>
+        <GlobalSearch />
         <div className="header-actions">
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
           <AnimeToggle active={animeOn} onToggle={toggleAnime} />
@@ -331,7 +471,7 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="capability-stack section" aria-labelledby="stack-title">
+      <section className="capability-stack section" id="agent-stack" aria-labelledby="stack-title">
         <div className="section-rail"><span>02</span><i />AGENT STACK</div>
         <div className="stack-heading"><div><span>THREE WAYS TO MOVE</span><h2 id="stack-title">AI 不再等待提问，<br />而是在流程里主动推进</h2></div><p>需求、缺陷、自动化任务，每一种都能成为 Agent 的启动信号。</p></div>
         <div className="stack-grid">
