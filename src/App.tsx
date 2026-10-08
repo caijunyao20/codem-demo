@@ -1,4 +1,4 @@
-import { type CSSProperties, type FormEvent, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 const BASE = import.meta.env.BASE_URL;
 const asset = (path: string) => `${BASE}${path.replace(/^\//, "")}`;
@@ -121,6 +121,293 @@ return (
     {active ? "★" : "☆"}
   </button>
 );
+}
+
+type WorkItemType = "iteration" | "defect" | "task"; // 需求 / 缺陷 / 任务
+
+type WorkItemDraft = {
+  id: string;            // 草稿本地 id
+  title: string;         // 工作项标题（自动截取，可编辑）
+  description: string;   // 工作项描述（默认取原句，可编辑）
+  type: WorkItemType;    // 类型（按关键词推断，可编辑）
+  owner: string;         // 责任人（识别结果，可编辑）
+  sourceLine: number;    // 来源纪要行号（0-based），用于回溯高亮
+  selected: boolean;     // 是否勾选参与批量创建
+  created: boolean;      // 是否已确认创建
+  workItemId?: string;   // 模拟创建后的工作项编号
+};
+
+type MinutesLogEntry = {
+  time: string;          // 操作时间（HH:MM:SS）
+  action: "generate" | "create";
+  detail: string;        // 操作摘要
+};
+
+const workItemTypeLabels: Record<WorkItemType, string> = { iteration: "需求", defect: "缺陷", task: "任务" };
+
+const sampleMinutes = `【需求评审纪要】CodeM BugFix Demo · 2026-10-08 14:00
+参会：产品（蔡均瑶）、研发、测试；记录：飞书妙记
+
+结论：
+1. 评审纪要支持一键转工作项方案通过，@张三 负责补充技术方案文档
+2. 首页演示数据由沙箱自动生成，无需人工维护
+
+待办：
+1. 新增评审纪要转工作项入口，责任人：李四
+2. 修复暗色主题下演示卡片文字对比度不足的问题（王五负责）
+3. 优化首页静态资源加载速度，@赵六 负责产出压缩方案`;
+
+const inferWorkItemType = (title: string): WorkItemType => {
+  if (/修复|bug|缺陷|崩溃/i.test(title)) return "defect";
+  if (/新增|支持|优化|上线/.test(title)) return "iteration";
+  return "task";
+};
+
+// 解析引擎：逐行规则匹配纪要中的待办、结论与责任人，纯函数、无副作用
+const parseMinutes = (text: string): WorkItemDraft[] => {
+  const drafts: WorkItemDraft[] = [];
+  const lines = text.split("\n");
+  const verbPattern = /(修复|新增|支持|优化|上线|补充|完成|产出|准备|接入|发布|生成|维护|联调|验收|跟进|排期)/;
+  lines.forEach((rawLine, sourceLine) => {
+    const line = rawLine.trim();
+    if (!line) return;
+    const content = line.replace(/^\s*(?:\d+[.、)]|[-•*])\s*/, "");
+    const hasMarker = /^(?:待办|todo|行动项|结论)\s*[：:]/i.test(content);
+    const hasOwner = /@[^\s@，。；,]+/.test(content) || /(?:责任人|负责人)\s*[：:]\s*[^\s，。；,]+/.test(content) || /[（(][^（）()]{1,10}负责[）)]\s*$/.test(content);
+    if (!hasMarker && !(content !== line && (hasOwner || verbPattern.test(content)))) return;
+
+    // 责任人识别（优先级：@姓名 > 责任人/负责人：姓名 > 行尾（姓名负责））
+    let owner = "";
+    const ownerMatch = content.match(/@([^\s@，。；,]+)/) ?? content.match(/(?:责任人|负责人)\s*[：:]\s*([^\s，。；,]+)/) ?? content.match(/[（(]([^（）()]{1,10})负责[）)]\s*$/);
+    if (ownerMatch) owner = ownerMatch[1];
+
+    // 标题：去掉标记前缀与责任人片段后截取前 30 字
+    const title = content
+      .replace(/^(?:待办|todo|行动项|结论)\s*[：:]\s*/i, "")
+      .replace(/[（(][^（）()]{1,10}负责[）)]\s*$/, "")
+      .replace(/\s*[，,]\s*(?:@[^\s@，。；,]+|(?:责任人|负责人)\s*[：:]\s*[^\s，。；,]+).*$/, "")
+      .replace(/(?:@[^\s@，。；,]+|(?:责任人|负责人)\s*[：:]\s*[^\s，。；,]+)\s*/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 30);
+    if (!title) return; // 「结论：」等纯标记行不生成草稿
+
+    drafts.push({
+      id: `draft-${sourceLine}`,
+      title,
+      description: `${line}\n来源：需求评审纪要`,
+      type: inferWorkItemType(title),
+      owner,
+      sourceLine,
+      selected: true,
+      created: false,
+    });
+  });
+  return drafts;
+};
+
+function MinutesConverter() {
+  const [minutesText, setMinutesText] = useState(sampleMinutes);
+  const [drafts, setDrafts] = useState<WorkItemDraft[]>([]);
+  const [parsing, setParsing] = useState(false);
+  const [parseProgress, setParseProgress] = useState(0);
+  const [hasParsed, setHasParsed] = useState(false);
+  const [logs, setLogs] = useState<MinutesLogEntry[]>([]);
+  const [sourceView, setSourceView] = useState(false);
+  const [hitLine, setHitLine] = useState<number | null>(null);
+  const [hitDraftId, setHitDraftId] = useState<string | null>(null);
+  const generationRef = useRef(0);
+  const workItemSeqRef = useRef(0);
+  const hitTimer = useRef<number | undefined>(undefined);
+
+  // 卸载时清理回溯高亮定时器
+  useEffect(() => () => {
+    if (hitTimer.current !== undefined) window.clearTimeout(hitTimer.current);
+  }, []);
+
+  const appendLog = (action: MinutesLogEntry["action"], detail: string) => {
+    const time = new Date().toTimeString().slice(0, 8);
+    setLogs((current) => [{ time, action, detail }, ...current].slice(0, 20));
+  };
+
+  const flashHit = (apply: () => void, clear: () => void) => {
+    apply();
+    if (hitTimer.current !== undefined) window.clearTimeout(hitTimer.current);
+    hitTimer.current = window.setTimeout(clear, 1400);
+  };
+
+  // 一键转工作项：模拟约 1.2s 识别进度后解析当前文本，已创建草稿保留
+  const generate = () => {
+    if (parsing) return;
+    const text = minutesText;
+    setParsing(true);
+    setParseProgress(0);
+    const generation = (generationRef.current += 1);
+    let progress = 0;
+    const timer = window.setInterval(() => {
+      progress = Math.min(progress + 10, 100);
+      setParseProgress(progress);
+      if (progress < 100) return;
+      window.clearInterval(timer);
+      window.setTimeout(() => {
+        const parsed = parseMinutes(text).map((draft, order) => ({ ...draft, id: `draft-${generation}-${order + 1}` }));
+        setDrafts((current) => [...current.filter((draft) => draft.created), ...parsed]);
+        setParsing(false);
+        setHasParsed(true);
+        appendLog("generate", parsed.length ? `生成 ${parsed.length} 条草稿（来源：评审纪要 #${generation}）` : "未识别到待办或结论");
+      }, 150);
+    }, 120);
+  };
+
+  const updateDraft = (id: string, patch: Partial<WorkItemDraft>) => {
+    setDrafts((current) => current.map((draft) => (draft.id === id ? { ...draft, ...patch } : draft)));
+  };
+
+  const setAllSelected = (selected: boolean) => {
+    setDrafts((current) => current.map((draft) => (draft.created ? draft : { ...draft, selected })));
+  };
+
+  const invertSelection = () => {
+    setDrafts((current) => current.map((draft) => (draft.created ? draft : { ...draft, selected: !draft.selected })));
+  };
+
+  const createSelected = () => {
+    const targets = drafts.filter((draft) => draft.selected && !draft.created);
+    if (!targets.length) return;
+    const workItemIds = new Map<string, string>();
+    targets.forEach((draft) => {
+      workItemSeqRef.current += 1;
+      workItemIds.set(draft.id, `WI-${73820479 + workItemSeqRef.current}`);
+    });
+    setDrafts((current) => current.map((draft) => {
+      const workItemId = workItemIds.get(draft.id);
+      return workItemId ? { ...draft, created: true, selected: false, workItemId } : draft;
+    }));
+    appendLog("create", `创建 ${targets.length} 条工作项（${[...workItemIds.values()].join("、")}，来源：评审纪要 #${generationRef.current}）`);
+  };
+
+  // 草稿 → 纪要：切换行号视图并一次性高亮来源行
+  const gotoSource = (draft: WorkItemDraft) => {
+    setSourceView(true);
+    setHitDraftId(null);
+    window.setTimeout(() => {
+      const row = document.getElementById(`minutes-line-${draft.sourceLine}`);
+      row?.scrollIntoView({ behavior: "smooth", block: "center" });
+      flashHit(() => setHitLine(draft.sourceLine), () => setHitLine(null));
+    }, 60);
+  };
+
+  // 纪要 → 工作项：反向定位草稿卡片并高亮
+  const gotoDraft = (draft: WorkItemDraft) => {
+    setHitLine(null);
+    const card = document.getElementById(`minutes-draft-${draft.id}`);
+    card?.scrollIntoView({ behavior: "smooth", block: "center" });
+    flashHit(() => setHitDraftId(draft.id), () => setHitDraftId(null));
+  };
+
+  const minutesLines = minutesText.split("\n");
+  const referencedLines = new Set(drafts.map((draft) => draft.sourceLine));
+  const pendingDrafts = drafts.filter((draft) => !draft.created);
+  const createdDrafts = drafts.filter((draft) => draft.created);
+  const selectedCount = drafts.filter((draft) => draft.selected && !draft.created).length;
+
+  return (
+    <section className="minutes-section section" id="minutes" aria-labelledby="minutes-title">
+      <div className="section-rail"><span>07</span><i />MINUTES TO WORK ITEM</div>
+      <div className="minutes-intro">
+        <span>MINUTES / ONE CLICK</span>
+        <h2 id="minutes-title">评审纪要，一键转结构化工作项</h2>
+        <p>自动识别纪要中的待办、结论与责任人，生成可编辑的工作项草稿；批量确认创建后，工作项与来源纪要双向可回溯。</p>
+      </div>
+      <div className="minutes-shell">
+        <div className="minutes-source">
+          <div className="minutes-pane-head">
+            <strong>评审纪要</strong>
+            <div className="minutes-pane-tools">
+              {sourceView ? <button type="button" onClick={() => setSourceView(false)}>返回编辑</button> : null}
+              <button type="button" onClick={() => { setMinutesText(sampleMinutes); setSourceView(false); }}>示例重置</button>
+            </div>
+          </div>
+          {sourceView ? (
+            <div className="minutes-lines" aria-label="纪要行号视图">
+              {minutesLines.map((line, index) => (
+                <div key={index} id={`minutes-line-${index}`} className={`minutes-line${hitLine === index ? " is-source-hit" : ""}${line.trim() ? "" : " is-empty"}`}>
+                  <span className="minutes-line-no">{String(index + 1).padStart(2, "0")}</span>
+                  <p>{line || "\u00A0"}</p>
+                  {referencedLines.has(index) ? (
+                    <button type="button" className="minutes-line-link" aria-label="定位到对应工作项草稿" onClick={() => { const target = drafts.find((draft) => draft.sourceLine === index); if (target) gotoDraft(target); }}>→ WI</button>
+                  ) : <span aria-hidden="true" />}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <textarea value={minutesText} spellCheck={false} aria-label="评审纪要内容" placeholder="粘贴需求评审纪要，支持「待办：」「结论：」「@责任人」等写法…" onChange={(event) => setMinutesText(event.target.value)} />
+          )}
+          <div className="minutes-pane-foot">
+            <button type="button" className="minutes-generate" onClick={generate} disabled={parsing}>{parsing ? "识别中…" : "一键转工作项"}</button>
+            <span>{drafts.length ? `DRAFTS ${drafts.length}` : "READY"}</span>
+          </div>
+        </div>
+        <div className="minutes-drafts">
+          {parsing ? (
+            <div className="minutes-parsing" role="status">
+              <div className="minutes-parse-progress"><i style={{ width: `${parseProgress}%` }} /></div>
+              <p>识别待办、结论与责任人… {parseProgress}%</p>
+            </div>
+          ) : (
+            <>
+              {hasParsed && !pendingDrafts.length ? <p className="minutes-empty">未识别到待办或结论，试试在纪要中使用「待办：」「结论：」或 @责任人 的写法。</p> : null}
+              {pendingDrafts.map((draft) => (
+                <article key={draft.id} id={`minutes-draft-${draft.id}`} className={`minutes-draft-card${hitDraftId === draft.id ? " is-source-hit" : ""}`}>
+                  <label className="minutes-draft-check">
+                    <input type="checkbox" checked={draft.selected} aria-label={`选择草稿：${draft.title}`} onChange={(event) => updateDraft(draft.id, { selected: event.target.checked })} />
+                    <span className={`minutes-type-badge ${draft.type}`}>{workItemTypeLabels[draft.type]}</span>
+                  </label>
+                  <div className="minutes-draft-fields">
+                    <div className="minutes-draft-row">
+                      <input className="minutes-field-title" value={draft.title} aria-label="工作项标题" onChange={(event) => updateDraft(draft.id, { title: event.target.value })} />
+                      <input className="minutes-field-owner" value={draft.owner} placeholder="待认领" aria-label="负责人" onChange={(event) => updateDraft(draft.id, { owner: event.target.value })} />
+                      <select className="minutes-field-type" value={draft.type} aria-label="工作项类型" onChange={(event) => updateDraft(draft.id, { type: event.target.value as WorkItemType })}>
+                        <option value="iteration">需求</option>
+                        <option value="defect">缺陷</option>
+                        <option value="task">任务</option>
+                      </select>
+                    </div>
+                    <textarea className="minutes-field-desc" value={draft.description} aria-label="工作项描述" onChange={(event) => updateDraft(draft.id, { description: event.target.value })} />
+                  </div>
+                  <button type="button" className="minutes-source-link" onClick={() => gotoSource(draft)}>来源纪要 ↗</button>
+                </article>
+              ))}
+              {createdDrafts.map((draft) => (
+                <article key={draft.id} id={`minutes-draft-${draft.id}`} className={`minutes-draft-card is-created${hitDraftId === draft.id ? " is-source-hit" : ""}`}>
+                  <span className={`minutes-type-badge ${draft.type}`}>{workItemTypeLabels[draft.type]}</span>
+                  <div className="minutes-draft-created-copy">
+                    <strong>{draft.title}</strong>
+                    <small>{draft.owner || "待认领"} · 来源行 {draft.sourceLine + 1}</small>
+                  </div>
+                  <span className="minutes-created-badge">已创建 ✓ {draft.workItemId}</span>
+                  <button type="button" className="minutes-source-link" onClick={() => gotoSource(draft)}>来源纪要 ↗</button>
+                </article>
+              ))}
+              {drafts.length ? (
+                <div className="minutes-draft-actions">
+                  <button type="button" onClick={() => setAllSelected(true)}>全选</button>
+                  <button type="button" onClick={invertSelection}>反选</button>
+                  <button type="button" className="minutes-create" onClick={createSelected} disabled={!selectedCount}>批量确认创建{selectedCount ? `（${selectedCount}）` : ""}</button>
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+      </div>
+      <div className="minutes-log">
+        <div><strong>操作日志</strong><small>OPERATION LOG · 最多保留 20 条</small></div>
+        {logs.length ? logs.map((entry, index) => (
+          <p key={`${entry.time}-${index}`}><time>{entry.time}</time><b className={entry.action}>{entry.action === "generate" ? "生成" : "创建"}</b><span>{entry.detail}</span></p>
+        )) : <p className="minutes-log-empty">暂无操作记录，点击「一键转工作项」开始。</p>}
+      </div>
+    </section>
+  );
 }
 
 export default function Home() {
@@ -340,6 +627,8 @@ export default function Home() {
           <article className="stack-card stack-signal"><div className="signal-orbit"><i /><i /><i /><b>M</b></div><div className="stack-copy"><span>03 / AUTOPILOT</span><h3>关键节点自动唤起 Agent</h3><p>无人值守推进，遇到高风险动作再交还给人。</p></div></article>
         </div>
       </section>
+
+      <MinutesConverter />
 
       <section className="workflow-section section" id="workflow">
         <div className="section-rail light"><span>03</span><i />EXECUTION TRACE</div>
